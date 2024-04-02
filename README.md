@@ -1,8 +1,7 @@
 # PCA-EXP-3-PARALLEL-REDUCTION-USING-UNROLLING-TECHNIQUES AY 23-24
-<h3>ENTER YOUR NAME Dhivya Shri</h3>
-<h3>ENTER YOUR REGISTER NO 212221230009</h3>
-<h3>EX. NO 2</h3>
-<h3>DATE</h3>
+<h3>NAME: Meenakshi M</h3>
+<h3>REGISTER NO: 212221230057</h3>
+<h3>DATE: </h3>
 <h1> <align=center> PARALLEL REDUCTION USING UNROLLING TECHNIQUES </h3>
   Refer to the kernel reduceUnrolling8 and implement the kernel reduceUnrolling16, in which each thread handles 16 data blocks. Compare kernel performance with reduceUnrolling8 and use the proper metrics and events with nvprof to explain any difference in performance.</h3>
 
@@ -50,172 +49,148 @@ Memory Deallocation
 
 ## PROGRAM:
 ```c
-void initialData(float *ip, const int size)
+#include <cuda_runtime.h>
+#include <stdio.h>
+#include <sys/time.h>
+// Kernel function declaration
+__global__ void reduceUnrolling16(int *g_idata, int *g_odata, unsigned int n);
+// Function to calculate elapsed time in milliseconds
+double getElapsedTime(struct timeval start, struct timeval end)
 {
-    int i;
+    long seconds = end.tv_sec - start.tv_sec;
+    long microseconds = end.tv_usec - start.tv_usec;
+    double elapsed = seconds + microseconds / 1e6;
+    return elapsed * 1000; // Convert to milliseconds
+}
+int main()
+{
+    // Input size and host memory allocation
+    unsigned int n = 1 << 20; // 1 million elements
+    size_t size = n * sizeof(int);
+    int *h_idata = (int *)malloc(size);
+    int *h_odata = (int *)malloc(size);
 
-    for(i = 0; i < size; i++)
+    // Initialize input data on the host
+    for (unsigned int i = 0; i < n; i++)
     {
-        ip[i] = (float)(rand() & 0xFF) / 10.0f;
+        h_idata[i] = 1;
     }
 
-    return;
+    // Device memory allocation
+    int *d_idata, *d_odata;
+    cudaMalloc((void **)&d_idata, size);
+    cudaMalloc((void **)&d_odata, size);
+
+    // Copy input data from host to device
+    cudaMemcpy(d_idata, h_idata, size, cudaMemcpyHostToDevice);
+
+    // Define grid and block dimensions
+    dim3 blockSize(256); // 256 threads per block
+    dim3 gridSize((n + blockSize.x * 16 - 1) / (blockSize.x * 16));
+
+    // Start CPU timer
+    struct timeval start_cpu, end_cpu;
+    gettimeofday(&start_cpu, NULL);
+
+    // Compute the sum on the CPU
+    int sum_cpu = 0;
+    for (unsigned int i = 0; i < n; i++)
+    {
+        sum_cpu += h_idata[i];
+    }
+
+    // Stop CPU timer
+    gettimeofday(&end_cpu, NULL);
+    double elapsedTime_cpu = getElapsedTime(start_cpu, end_cpu);
+
+    // Start GPU timer
+    struct timeval start_gpu, end_gpu;
+    gettimeofday(&start_gpu, NULL);
+
+    // Launch the reduction kernel
+    reduceUnrolling16<<<gridSize, blockSize>>>(d_idata, d_odata, n);
+
+    // Copy the result from device to host
+    cudaMemcpy(h_odata, d_odata, size, cudaMemcpyDeviceToHost);
+
+    // Compute the final sum on the GPU
+    int sum_gpu = 0;
+    for (unsigned int i = 0; i < gridSize.x; i++)
+    {
+        sum_gpu += h_odata[i];
+    }
+
+    // Stop GPU timer
+    gettimeofday(&end_gpu, NULL);
+    double elapsedTime_gpu = getElapsedTime(start_gpu, end_gpu);
+
+    // Print the results and elapsed times
+    printf("CPU Sum: %d\n", sum_cpu);
+    printf("GPU Sum: %d\n", sum_gpu);
+    printf("CPU Elapsed Time: %.2f ms\n", elapsedTime_cpu);
+    printf("GPU Elapsed Time: %.2f ms\n", elapsedTime_gpu);
+
+    // Free memory
+    free(h_idata);
+    free(h_odata);
+    cudaFree(d_idata);
+    cudaFree(d_odata);
+
+    return 0;
 }
 
-void sumMatrixOnHost(float *A, float *B, float *C, const int nx,
-                     const int ny)
+__global__ void reduceUnrolling16(int *g_idata, int *g_odata, unsigned int n)
 {
-    float *ia = A;
-    float *ib = B;
-    float *ic = C;
+    // Set thread ID
+    unsigned int tid = threadIdx.x;
+    unsigned int idx = blockIdx.x * blockDim.x * 16 + threadIdx.x;
 
-    for (int iy = 0; iy < ny; iy++)
+    // Convert global data pointer to the local pointer of this block
+    int *idata = g_idata + blockIdx.x * blockDim.x * 16;
+
+    // Unrolling 16
+    if (idx + 7 * blockDim.x < n)
     {
-        for (int ix = 0; ix < nx; ix++)
-        {
-            ic[ix] = ia[ix] + ib[ix];
+        int a1 = g_idata[idx];
+        int a2 = g_idata[idx + blockDim.x];
+        int a3 = g_idata[idx + 2 * blockDim.x];
+        int a4 = g_idata[idx + 3 * blockDim.x];
 
+        int b1 = g_idata[idx + 8 * blockDim.x];
+        int b2 = g_idata[idx + 9 * blockDim.x];
+        int b3 = g_idata[idx + 10 * blockDim.x];
+        int b4 = g_idata[idx + 11 * blockDim.x];
+
+        g_idata[idx] = a1 + a2 + a3 + a4 + b1 + b2 + b3 + b4;
+    }
+
+    __syncthreads();
+
+    // In-place reduction in global memory
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+        {
+            idata[tid] += idata[tid + stride];
         }
 
-        ia += nx;
-        ib += nx;
-        ic += nx;
+        // Synchronize within thread block
+        __syncthreads();
     }
 
-    return;
-}
-
-
-void checkResult(float *hostRef, float *gpuRef, const int N)
-{
-    double epsilon = 1.0E-8;
-    bool match = 1;
-
-    for (int i = 0; i < N; i++)
+    // Write result for this block to global memory
+    if (tid == 0)
     {
-        if (abs(hostRef[i] - gpuRef[i]) > epsilon)
-        {
-            match = 0;
-            printf("host %f gpu %f\n", hostRef[i], gpuRef[i]);
-            break;
-        }
+        g_odata[blockIdx.x] = idata[0];
     }
-
-    if (match)
-        printf("Arrays match.\n\n");
-    else
-        printf("Arrays do not match.\n\n");
-}
-
-// grid 2D block 2D
-__global__ void sumMatrixOnGPU2D(float *A, float *B, float *C, int NX, int NY)
-{
-    unsigned int ix = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned int iy = blockIdx.y * blockDim.y + threadIdx.y;
-    unsigned int idx = iy * NX + ix;
-
-    if (ix < NX && iy < NY)
-    {
-        C[idx] = A[idx] + B[idx];
-    }
-}
-
-int main(int argc, char **argv)
-{
-    printf("%s Starting...\n", argv[0]);
-
-    // set up device
-    int dev = 0;
-    cudaDeviceProp deviceProp;
-    CHECK(cudaGetDeviceProperties(&deviceProp, dev));
-    printf("Using Device %d: %s\n", dev, deviceProp.name);
-    CHECK(cudaSetDevice(dev));
-
-    // set up data size of matrix
-    int nx = 1 << 14;
-    int ny = 1 << 14;
-
-    int nxy = nx * ny;
-    int nBytes = nxy * sizeof(float);
-    printf("Matrix size: nx %d ny %d\n", nx, ny);
-
-    // malloc host memory
-    float *h_A, *h_B, *hostRef, *gpuRef;
-    h_A = (float *)malloc(nBytes);
-    h_B = (float *)malloc(nBytes);
-    hostRef = (float *)malloc(nBytes);
-    gpuRef = (float *)malloc(nBytes);
-
-    // initialize data at host side
-    double iStart = seconds();
-    initialData(h_A, nxy);
-    initialData(h_B, nxy);
-    double iElaps = seconds() - iStart;
-    printf("Matrix initialization elapsed %f sec\n", iElaps);
-
-    memset(hostRef, 0, nBytes);
-    memset(gpuRef, 0, nBytes);
-
-    // add matrix at host side for result checks
-    iStart = seconds();
-    sumMatrixOnHost(h_A, h_B, hostRef, nx, ny);
-    iElaps = seconds() - iStart;
-    printf("sumMatrixOnHost elapsed %f sec\n", iElaps);
-
-    // malloc device global memory
-    float *d_MatA, *d_MatB, *d_MatC;
-    CHECK(cudaMalloc((void **)&d_MatA, nBytes));
-    CHECK(cudaMalloc((void **)&d_MatB, nBytes));
-    CHECK(cudaMalloc((void **)&d_MatC, nBytes));
-
-    // transfer data from host to device
-    CHECK(cudaMemcpy(d_MatA, h_A, nBytes, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(d_MatB, h_B, nBytes, cudaMemcpyHostToDevice));
-
-    // invoke kernel at host side
-    int dimx = 32;
-    int dimy = 32;
-    dim3 block(dimx, dimy);
-    dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
-
-    iStart = seconds();
-    sumMatrixOnGPU2D<<<grid, block>>>(d_MatA, d_MatB, d_MatC, nx, ny);
-    CHECK(cudaDeviceSynchronize());
-    iElaps = seconds() - iStart;
-    printf("sumMatrixOnGPU2D <<<(%d,%d), (%d,%d)>>> elapsed %f sec\n", grid.x,
-           grid.y,
-           block.x, block.y, iElaps);
-    // check kernel error
-    CHECK(cudaGetLastError());
-
-    // copy kernel result back to host side
-    CHECK(cudaMemcpy(gpuRef, d_MatC, nBytes, cudaMemcpyDeviceToHost));
-
-    // check device results
-    checkResult(hostRef, gpuRef, nxy);
-
-    // free device global memory
-    CHECK(cudaFree(d_MatA));
-    CHECK(cudaFree(d_MatB));
-    CHECK(cudaFree(d_MatC));
-
-    // free host memory
-    free(h_A);
-    free(h_B);
-    free(hostRef);
-    free(gpuRef);
-
-    // reset device
-    CHECK(cudaDeviceReset());
-
-    return (0);
 }
 ```
 ## OUTPUT:
-### Float point data:
-![image](https://github.com/Meenakshi0907/PCA-EXP-2-MATRIX-SUMMATION-USING-2D-GRIDS-AND-2D-BLOCKS-AY-23-24/assets/94165108/a31d0390-62c2-46dd-9991-dbc20a8a09dd)
-### Int point data:
-![image](https://github.com/Meenakshi0907/PCA-EXP-2-MATRIX-SUMMATION-USING-2D-GRIDS-AND-2D-BLOCKS-AY-23-24/assets/94165108/608125f9-b209-4ddf-a382-b3f74ce8592e)
+### Unrolling 8
+![image](https://github.com/Meenakshi0907/PCA-EXP-3-PARALLEL-REDUCTION-USING-UNROLLING-TECHNIQUES-AY-23-24/assets/94165108/eeba2a1e-2c9e-4983-b83c-9fd96d4befc1)
+
+### Unrolling 16
+![image](https://github.com/Meenakshi0907/PCA-EXP-3-PARALLEL-REDUCTION-USING-UNROLLING-TECHNIQUES-AY-23-24/assets/94165108/417d9e74-5955-4301-a01d-df74b5e84a48)
 
 ## RESULT:
-The host took 11.495350 seconds to complete it’s computation, while the GPU outperforms the host and completes the computation in 0.013784 seconds. Therefore, float variables in the GPU will result in the best possible result. Thus, matrix summation using 2D grids and 2D blocks has been performed successfully.
+Thus, the program has been executed by unrolling by 8 and unrolling by 16. It is observed that 8 has executed with less elapsed time than 16 with blocks 524288, 1048576.
